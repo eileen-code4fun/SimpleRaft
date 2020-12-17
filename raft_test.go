@@ -18,17 +18,7 @@ func compareLogs(a []logEntry, b []logEntry, t *testing.T) {
   }
 }
 
-func TestInitialLeaderElection(t *testing.T) {
-  t.Parallel()
-  // Launch 3 servers and verify one of them becomes leader.
-  svrs := map[int]*server{}
-  for i := 0; i < 3; i ++ {
-    svrs[i] = newServer(i)
-  }
-  for _, svr := range svrs {
-    svr.start(svrs, false)
-  }
-  time.Sleep(3 * time.Second)
+func verifyRoles(svrs map[int]*server, wantLeaderCount, wantFollowerCount, wantCandidateCount int, t *testing.T) {
   var leaderCount, followerCount, candidateCount int
   for _, svr := range svrs {
     switch svr.role {
@@ -40,9 +30,23 @@ func TestInitialLeaderElection(t *testing.T) {
       candidateCount += 1
     }
   }
-  if leaderCount != 1 || followerCount != 2 || candidateCount != 0 {
-    t.Errorf("got leaderCount=%d, followerCount=%d, candidateCount=%d; want 1, 2, 0", leaderCount, followerCount, candidateCount)
+  if leaderCount != wantLeaderCount || followerCount != wantFollowerCount || candidateCount != wantCandidateCount {
+    t.Errorf("got leaderCount=%d, followerCount=%d, candidateCount=%d; want %d, %d, %d", leaderCount, followerCount, candidateCount, wantLeaderCount, wantFollowerCount, wantCandidateCount)
   }
+}
+
+func TestInitialLeaderElection(t *testing.T) {
+  t.Parallel()
+  // Launch 3 servers and verify one of them becomes leader.
+  svrs := map[int]*server{}
+  for i := 0; i < 3; i ++ {
+    svrs[i] = newServer(i)
+  }
+  for _, svr := range svrs {
+    svr.start(svrs, false)
+  }
+  time.Sleep(3 * time.Second)
+  verifyRoles(svrs, 1, 2, 0, t)
 }
 
 func TestLogReplicated(t *testing.T) {
@@ -71,4 +75,22 @@ func TestLogReplicated(t *testing.T) {
   compareLogs(svrs[0].logs, expected, t)
   compareLogs(svrs[1].logs, expected, t)
   compareLogs(svrs[2].logs, expected, t)
+}
+
+func TestReelectLeader(t *testing.T) {
+  t.Parallel()
+  svrs := map[int]*server{}
+  for i := 0; i < 5; i ++ {
+    svrs[i] = newServer(i)
+  }
+  // Set server 0 to be the leader.
+  svrs[0].start(svrs, true)
+  for i := 1; i < 5; i ++ {
+    svrs[i].start(svrs, false)
+  }
+  // Wait briefly so that leader has a chance to contact followers.
+  time.Sleep(time.Second)
+  svrs[0].kill()
+  time.Sleep(5 * time.Second)
+  verifyRoles(svrs[0].peers, 1, 3, 0, t)
 }
