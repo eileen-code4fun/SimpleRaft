@@ -19,6 +19,8 @@ const (
   rpcTimeout = 100 * time.Millisecond
   heartbeatTimeout = 200 * time.Millisecond
   electionTimeout = 1 * time.Second
+  minElectionTimeoutMultiplier = 1
+  maxElectionTimeoutMultiplier = 5
 )
 
 type request interface {
@@ -154,7 +156,7 @@ func (s *server) start(peers map[int]*server, forceLeader bool) error {
 }
 
 func newElectionCountdown() time.Duration {
-  return electionTimeout + time.Second * time.Duration(rand.Intn(10))
+  return electionTimeout * time.Duration(rand.Intn(maxElectionTimeoutMultiplier - minElectionTimeoutMultiplier) + minElectionTimeoutMultiplier)
 }
 
 func (s *server) run() {
@@ -176,16 +178,19 @@ func (s *server) run() {
         // No request from client. Need to send heartbeat.
         s.broadcastEntry()
       case CANDIDATE:
-        // Clear election countdown.
-        electionCountdown = newElectionCountdown()
-        // Run election.
-        if s.runElection() {
-          // Become leader.
-          s.role = LEADER
-          s.leaderId = s.id
-          for id, _ := range s.peers {
-            // Initialize to be the current last log entry + 1.
-            s.nextIndex[id] = len(s.logs)
+        if electionCountdown < 0 {
+          // Clear election countdown.
+          electionCountdown = newElectionCountdown()
+          // Run election.
+          if s.runElection() {
+            // Become leader.
+            s.role = LEADER
+            s.leaderId = s.id
+            log.Printf("server %d becomes leader", s.id)
+            for id, _ := range s.peers {
+              // Initialize to be the current last log entry + 1.
+              s.nextIndex[id] = len(s.logs)
+            }
           }
         }
       }
@@ -257,7 +262,7 @@ func (s *server) handleRequest(req request) {
     if r.term < s.currentTerm {
       r.resp <- response{term: s.currentTerm}
       return
-    } else if r.term > s.currentTerm {
+    } else if r.term >= s.currentTerm {
       s.role = FOLLOWER
       s.currentTerm = r.term
     }

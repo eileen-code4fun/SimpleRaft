@@ -118,3 +118,25 @@ func TestReelectLeader(t *testing.T) {
   time.Sleep(5 * time.Second)
   verifyRoles(svrs[0].peers, 1, 3, 0, t)
 }
+
+func TestResolveLeaderCompetition(t *testing.T) {
+  t.Parallel()
+  svrs := map[int]*server{}
+  for i := 0; i < 3; i ++ {
+    svrs[i] = newServer(i)
+  }
+  // Set server 0 to be the leader.
+  svrs[0].start(svrs, true)
+  svrs[1].start(svrs, false)
+  svrs[2].start(svrs, false)
+  time.Sleep(time.Second)
+  // Kill the leader.
+  svrs[0].kill()
+  // Wait for new leader to be elected.
+  time.Sleep(5 * time.Second)
+  verifyRoles(svrs[0].peers, 1, 1, 0, t)
+  // Old leader comes back.
+  svrs[0].start(svrs, true)
+  time.Sleep(time.Second)
+  verifyRoles(svrs, 1, 2, 0, t)
+}
