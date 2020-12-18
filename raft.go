@@ -142,16 +142,16 @@ func (s *server) start(peers map[int]*server, forceLeader bool) error {
     s.role = FOLLOWER
   }
   s.peers = map[int]*server{}
+  s.nextIndex = map[int]int{}
   for id, svr := range peers {
+    if s.role == LEADER {
+      // Initialize to be the current last log entry + 1.
+      s.nextIndex[id] = len(s.logs)
+    }
     if id == s.id {
       continue
     }
     s.peers[id] = svr
-  }
-  s.nextIndex = map[int]int{}
-  for id, _ := range peers {
-    // Initialize to be the current last log entry + 1.
-    s.nextIndex[id] = len(s.logs)
   }
   go s.run()
   return nil
@@ -186,6 +186,11 @@ func (s *server) run() {
         if s.runElection() {
           // Become leader.
           s.role = LEADER
+          s.leaderId = s.id
+          for id, _ := range s.peers {
+            // Initialize to be the current last log entry + 1.
+            s.nextIndex[id] = len(s.logs)
+          }
         }
       }
     }
@@ -205,29 +210,32 @@ func sendHelper(q chan request, r request) (err error) {
   return
 }
 
-func (s *server) send(reqs map[int]request) []response {
-  respChan := make(chan response, len(s.peers))
+func (s *server) send(reqs map[int]request) map[int]response {
+  var mu sync.Mutex
+  resps := map[int]response{}
+  var wg sync.WaitGroup
   for id, req := range reqs {
     sid := id // record peer ID.
+    sreq := req // record the request.
+    wg.Add(1)
     go func() {
+      defer wg.Done()
       var resp response
-      if err := sendHelper(s.peers[sid].incoming, req); err != nil {
+      if err := sendHelper(s.peers[sid].incoming, sreq); err != nil {
         resp = response{err: err}
       } else {
         select {
-        case resp = <- req.getRespChan():
+        case resp = <- sreq.getRespChan():
         case <-time.After(rpcTimeout):
-          resp = response{err: fmt.Errorf("no response from server %d", id)}
+          resp = response{err: fmt.Errorf("no response from server %d", sid)}
         }
       }
-      respChan <- resp
+      mu.Lock()
+      defer mu.Unlock()
+      resps[sid] = resp
     } ()
   }
-  var resps []response
-  for i := 0; i < len(reqs); i ++ {
-    resp := <- respChan
-    resps = append(resps, resp)
-  }
+  wg.Wait()
   return resps
 }
 
@@ -261,7 +269,7 @@ func (s *server) handleRequest(req request) {
     // Check if preceding entry matches.
     if r.prevLogIndex == -1 || r.prevLogIndex < len(s.logs) && s.logs[r.prevLogIndex].term == r.prevLogTerm {
       if len(s.logs) > 0 {
-        s.logs = s.logs[0:r.prevLogTerm+1]
+        s.logs = s.logs[0:r.prevLogIndex+1]
       }
       if r.entry != nil {
         s.logs = append(s.logs, *r.entry)
@@ -307,6 +315,7 @@ func (s *server) handleRequest(req request) {
 // broadcastEntry sends one entry to each follower based on next index.
 // The function returns true if majority of the followers respond success.
 func (s *server) broadcastEntry() bool {
+  log.Printf("server %d sending broadcast with logs: %v; nextIndex: %v", s.id, s.logs, s.nextIndex)
   reqs := map[int]request{}
   for id, _ := range s.peers {
     req := appendEntryRequest{
@@ -330,6 +339,7 @@ func (s *server) broadcastEntry() bool {
   for id, resp := range resps {
     if resp.err != nil {
       // Skip this time and retry later.
+      log.Printf("failed to receive response from server %d", id)
       continue
     }
     if resp.term > s.currentTerm {
@@ -374,9 +384,10 @@ func (s *server) runElection() bool {
   resps := s.send(reqs)
   // Go over results
   successCount := 1 // count itself.
-  for _, resp := range resps {
+  for id, resp := range resps {
     if resp.err != nil {
       // Skip this time and retry later.
+      log.Printf("failed to receive response from server %d", id)
       continue
     }
     if resp.term > s.currentTerm {

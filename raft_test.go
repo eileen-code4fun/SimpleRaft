@@ -1,24 +1,32 @@
 package raft
 
 // go test -v -run TestLog*
+// go test -v raft_test.go raft.go
 
 import (
+  "math"
   "testing"
   "time"
 )
 
-func compareLogs(a []logEntry, b []logEntry, t *testing.T) {
-  if len(a) != len(b) {
-    t.Fatalf("unequal log size %d vs %d", len(a), len(b))
+func min(a, b int) int {
+  return int(math.Min(float64(a), float64(b)))
+}
+
+func compareLogs(svr *server, expected []logEntry, t *testing.T) {
+  t.Helper()
+  if len(svr.logs) != len(expected) {
+    t.Errorf("server %d has log size %d vs %d", svr.id, len(svr.logs), len(expected))
   }
-  for i, _ := range a {
-    if a[i].term != b[i].term || a[i].val != b[i].val {
-      t.Errorf("unequal log at %d; %v vs %v", i, a[i], b[i])
+  for i := 0; i < min(len(svr.logs), len(expected)); i ++ {
+    if svr.logs[i].term != expected[i].term || svr.logs[i].val != expected[i].val {
+      t.Errorf("server %d has log at %d; %v vs %v", svr.id, i, svr.logs[i], expected[i])
     }
   }
 }
 
 func verifyRoles(svrs map[int]*server, wantLeaderCount, wantFollowerCount, wantCandidateCount int, t *testing.T) {
+  t.Helper()
   var leaderCount, followerCount, candidateCount int
   for _, svr := range svrs {
     switch svr.role {
@@ -32,6 +40,19 @@ func verifyRoles(svrs map[int]*server, wantLeaderCount, wantFollowerCount, wantC
   }
   if leaderCount != wantLeaderCount || followerCount != wantFollowerCount || candidateCount != wantCandidateCount {
     t.Errorf("got leaderCount=%d, followerCount=%d, candidateCount=%d; want %d, %d, %d", leaderCount, followerCount, candidateCount, wantLeaderCount, wantFollowerCount, wantCandidateCount)
+  }
+}
+
+func sendClientRequest(q chan request, r request, t *testing.T) {
+  t.Helper()
+  q <- r
+  select {
+  case r := <-r.getRespChan():
+    if !r.success {
+      t.Errorf("got failed response %v; want success", r)
+    }
+  case <- time.After(3 * time.Second):
+    t.Error("time out waiting for response")
   }
 }
 
@@ -60,21 +81,24 @@ func TestLogReplicated(t *testing.T) {
   svrs[1].start(svrs, true)
   svrs[2].start(svrs, false)
   // Send a client request to the leader.
-  resp := make(chan response, 1)
-  svrs[1].incoming <- clientRequest{val: 5, resp: resp}
-  select {
-  case r := <-resp:
-    if !r.success {
-      t.Errorf("got failed response %v; want success", r)
-    }
-  case <- time.After(3 * time.Second):
-    t.Error("time out waiting for response")
-  }
+  sendClientRequest(svrs[1].incoming, clientRequest{val: 5, resp: make(chan response, 1)}, t)
   // Check log is replicated.
   expected := []logEntry{{term: 0, val: 5}}
-  compareLogs(svrs[0].logs, expected, t)
-  compareLogs(svrs[1].logs, expected, t)
-  compareLogs(svrs[2].logs, expected, t)
+  compareLogs(svrs[0], expected, t)
+  compareLogs(svrs[1], expected, t)
+  compareLogs(svrs[2], expected, t)
+  // Restart a follower and see if it catches later.
+  svrs[0].kill()
+  // Send another client request.
+  sendClientRequest(svrs[1].incoming, clientRequest{val: 6, resp: make(chan response, 1)}, t)
+  sendClientRequest(svrs[1].incoming, clientRequest{val: 7, resp: make(chan response, 1)}, t)
+  svrs[0].start(svrs, false)
+  // Wait for the server to catch up.
+  time.Sleep(2 * time.Second)
+  expected = []logEntry{{term: 0, val: 5}, {term: 0, val: 6}, {term: 0, val: 7}}
+  compareLogs(svrs[0], expected, t)
+  compareLogs(svrs[1], expected, t)
+  compareLogs(svrs[2], expected, t)
 }
 
 func TestReelectLeader(t *testing.T) {
