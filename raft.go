@@ -10,10 +10,6 @@ import (
 )
 
 const (
-  CLIENT_REQUEST = iota + 1
-  APPEND_ENTRIES
-  REQUEST_VOTE
-
   LEADER = iota + 1
   CANDIDATE
   FOLLOWER
