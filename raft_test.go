@@ -1,6 +1,6 @@
 package raft
 
-// go test -v -run TestLog*
+// go test -v -run Test*
 // go test -v raft_test.go raft.go
 
 import (
@@ -66,7 +66,7 @@ func TestInitialLeaderElection(t *testing.T) {
   for _, svr := range svrs {
     svr.start(svrs, false)
   }
-  time.Sleep(3 * time.Second)
+  time.Sleep(5 * time.Second)
   verifyRoles(svrs, 1, 2, 0, t)
 }
 
@@ -137,6 +137,6 @@ func TestResolveLeaderCompetition(t *testing.T) {
   verifyRoles(svrs[0].peers, 1, 1, 0, t)
   // Old leader comes back.
   svrs[0].start(svrs, true)
-  time.Sleep(time.Second)
+  time.Sleep(2 * time.Second)
   verifyRoles(svrs, 1, 2, 0, t)
 }

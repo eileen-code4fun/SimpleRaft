@@ -5,6 +5,7 @@ import (
   "fmt"
   "log"
   "math/rand"
+  "sort"
   "sync"
   "time"
 )
@@ -49,6 +50,7 @@ type appendEntryRequest struct {
   leaderId int
   prevLogIndex int
   prevLogTerm int
+  committedIndex int
   entry *logEntry
   resp chan response
 }
@@ -91,6 +93,7 @@ type server struct {
   leaderId int
   nextIndex map[int]int // The next log entry to send to peers.
   role int
+  committedIndex int
 
   // RPC channel.
   incoming chan request
@@ -151,6 +154,7 @@ func (s *server) start(peers map[int]*server, forceLeader bool) error {
     }
     s.peers[id] = svr
   }
+  s.committedIndex = -1
   go s.run()
   return nil
 }
@@ -267,6 +271,7 @@ func (s *server) handleRequest(req request) {
       s.currentTerm = r.term
     }
     s.leaderId = r.leaderId
+    s.committedIndex = r.committedIndex
     // Check if preceding entry matches.
     if r.prevLogIndex == -1 || r.prevLogIndex < len(s.logs) && s.logs[r.prevLogIndex].term == r.prevLogTerm {
       if len(s.logs) > 0 {
@@ -323,6 +328,7 @@ func (s *server) broadcastEntry() bool {
       term : s.currentTerm,
       leaderId : s.id,
       prevLogIndex : s.nextIndex[id] - 1,
+      committedIndex: s.committedIndex,
       resp : make(chan response, 1),
     }
     if s.nextIndex[id] < len(s.logs) {
@@ -337,6 +343,7 @@ func (s *server) broadcastEntry() bool {
   resps := s.send(reqs)
   // Go over results
   successCount := 1 // count itself.
+  var successFromCurrentTerm []int
   for id, resp := range resps {
     if resp.err != nil {
       // Skip this time and retry later.
@@ -355,10 +362,19 @@ func (s *server) broadcastEntry() bool {
       if s.nextIndex[id] < len(s.logs) {
         s.nextIndex[id] += 1
       }
+      if s.nextIndex[id] > 0 && s.logs[s.nextIndex[id] - 1].term == s.currentTerm {
+        successFromCurrentTerm = append(successFromCurrentTerm, s.nextIndex[id] - 1)
+      }
     } else {
       // Backtrack next index for this follower.
       s.nextIndex[id] -= 1
     }
+  }
+  // Update committed index.
+  if len(successFromCurrentTerm) >= len(s.peers) / 2 {
+    sort.Ints(successFromCurrentTerm)
+    // Committed index is the largest index that has received majority ack for the current term.
+    s.committedIndex = successFromCurrentTerm[len(successFromCurrentTerm) - len(s.peers) / 2]
   }
   return successCount >= len(s.peers) / 2 + 1
 }

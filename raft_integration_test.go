@@ -68,4 +68,12 @@ func TestEventualConsistency(t *testing.T) {
       }
     }
   }
+  // Send one final client request to refresh the committed index.
+  sendClientRequest(svrs[svrs[0].leaderId].incoming, clientRequest{val: total, resp: make(chan response, 1)}, t)
+  time.Sleep(time.Second)
+  for id, svr := range svrs {
+    if svr.committedIndex != total {
+      t.Errorf("server %d has commited index %d; want %d", id, svr.committedIndex, total)
+    }
+  }
 }
