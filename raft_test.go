@@ -115,8 +115,8 @@ func TestReelectLeader(t *testing.T) {
   // Wait briefly so that leader has a chance to contact followers.
   time.Sleep(time.Second)
   svrs[0].kill()
-  time.Sleep(5 * time.Second)
-  verifyRoles(svrs[0].peers, 1, 3, 0, t)
+  time.Sleep(6 * time.Second)
+  verifyRoles(svrs[0].getCurrentPeers(), 1, 3, 0, t)
 }
 
 func TestResolveLeaderCompetition(t *testing.T) {
@@ -134,9 +134,39 @@ func TestResolveLeaderCompetition(t *testing.T) {
   svrs[0].kill()
   // Wait for new leader to be elected.
   time.Sleep(5 * time.Second)
-  verifyRoles(svrs[0].peers, 1, 1, 0, t)
+  verifyRoles(svrs[0].getCurrentPeers(), 1, 1, 0, t)
   // Old leader comes back.
   svrs[0].start(svrs, true)
-  time.Sleep(2 * time.Second)
+  time.Sleep(1 * time.Second)
   verifyRoles(svrs, 1, 2, 0, t)
+}
+
+func TestMembershipChange(t *testing.T) {
+  t.Parallel()
+  svrs := map[int]*server{}
+  for i := 0; i < 3; i ++ {
+    svrs[i] = newServer(i)
+  }
+  // Set server 0 to be the leader.
+  svrs[0].start(svrs, true)
+  svrs[1].start(svrs, false)
+  svrs[2].start(svrs, false)
+  // Add server 3.
+  svrs[3] = newServer(3)
+  svrs[3].start(svrs, false)
+  sendClientRequest(svrs[0].incoming, addServerRequest{serverAddr: svrs[3], resp: make(chan response, 1)}, t)
+  time.Sleep(time.Second)
+  // Server 1, 2, 3 are all followers.
+  verifyRoles(svrs[0].getCurrentPeers(), 0, 3, 0, t)
+  // Remove server 1.
+  sendClientRequest(svrs[0].incoming, removeServerRequest{serverAddr: svrs[1], resp: make(chan response, 1)}, t)
+  time.Sleep(2 * time.Second)
+  // No append entry is sent to server 1, but it can't come back to run election.
+  verifyRoles(svrs[1].getCurrentPeers(), 1, 2, 0, t)
+  svrs[1].kill()
+  // Remove leader.
+  sendClientRequest(svrs[0].incoming, removeServerRequest{serverAddr: svrs[0], resp: make(chan response, 1)}, t)
+  time.Sleep(6 * time.Second)
+  // The remaining server 1 and 3 form the cluster.
+  verifyRoles(svrs[0].getCurrentPeers(), 1, 1, 0, t)
 }
